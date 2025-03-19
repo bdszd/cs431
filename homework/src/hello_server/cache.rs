@@ -1,21 +1,26 @@
 //! Thread-safe key/value cache.
 
-use std::collections::hash_map::{Entry, HashMap};
-use std::hash::Hash;
+use std::collections::hash_map::{Entry, HashMap, DefaultHasher};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, RwLock};
 
+const SHARD_COUNT: usize = 16;
 /// Cache that remembers the result for each key.
 #[derive(Debug)]
 pub struct Cache<K, V> {
     // todo! This is an example cache type. Build your own cache type that satisfies the
     // specification for `get_or_insert_with`.
-    inner: Mutex<HashMap<K, V>>,
+    inner: Vec<RwLock<HashMap<K, V>>>,
 }
 
 impl<K, V> Default for Cache<K, V> {
     fn default() -> Self {
+        let mut cache = Vec::with_capacity(SHARD_COUNT);
+        for _ in 0..SHARD_COUNT {
+            cache.push(RwLock::new(HashMap::new()));
+        }
         Self {
-            inner: Mutex::new(HashMap::new()),
+            inner: cache,
         }
     }
 }
@@ -36,6 +41,21 @@ impl<K: Eq + Hash + Clone, V: Clone> Cache<K, V> {
     ///
     /// [`Entry`]: https://doc.rust-lang.org/stable/std/collections/hash_map/struct.HashMap.html#method.entry
     pub fn get_or_insert_with<F: FnOnce(K) -> V>(&self, key: K, f: F) -> V {
-        todo!()
+        let shard_index = self.get_shard(&key);
+
+        if let Some(value) = self.inner[shard_index].read().unwrap().get(&key).cloned() {
+            return value;
+        }
+
+        let mut shard = self.inner[shard_index].write().unwrap();
+        shard.entry(key.clone()).or_insert_with(|| f(key.clone())).clone()
+    }
+
+    fn get_shard(&self, key: &K) -> usize {
+        let hash = DefaultHasher::default();
+
+        let mut hasher = hash;
+        key.hash(&mut hasher);
+        (hasher.finish() as usize) % SHARD_COUNT
     }
 }
